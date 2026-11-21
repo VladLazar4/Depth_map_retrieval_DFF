@@ -1,5 +1,6 @@
 import torch
 import torch.nn.functional as F
+import math
 
 class AngularSpectrumPropagator:
     """
@@ -25,11 +26,25 @@ class AngularSpectrumPropagator:
         # Propagation mask: let only the waves that makes sense phisically (that will not cause square root of a negattive number)
         self.limit = 1.0 / (wavelength**2)
         self.prop_mask = self.F_squared <= self.limit
-        
+
         # Z-axis frequency (f_z)
         self.FZ = torch.zeros_like(self.F_squared)
         self.FZ[self.prop_mask] = torch.sqrt(self.limit - self.F_squared[self.prop_mask])
-        
+
+    def get_transfer_function(self, z: float) -> torch.Tensor:
+        """
+        Compute the band-limited ASM transfer function H(fx, fy; z)
+        using the Matsushima & Shimobaba anti-aliasing mask.
+        """
+        phase = 2.0 * torch.pi * z * self.FZ
+        H_transfer = torch.exp(1j * phase)
+
+        # Band-limit mask to prevent aliasing at large propagation distances
+        fx_lim = 1.0 / (self.wavelength * math.sqrt((2.0 * z / (self.nx * self.pixel_pitch)) ** 2 + 1.0))
+        fy_lim = 1.0 / (self.wavelength * math.sqrt((2.0 * z / (self.ny * self.pixel_pitch)) ** 2 + 1.0))
+        band_mask = (torch.abs(self.FX) < fx_lim) & (torch.abs(self.FY) < fy_lim)
+
+        return H_transfer * self.prop_mask * band_mask
 
     def propagate(self, H: torch.Tensor, z: float) -> torch.Tensor:
         """
@@ -39,10 +54,7 @@ class AngularSpectrumPropagator:
         A = torch.fft.fft2(H)
         
         # 2. Compute H transfer function (phase filter)
-        phase = 2 * torch.pi * z * self.FZ
-        H_transfer = torch.exp(1j * phase)
-        
-        H_transfer = H_transfer * self.prop_mask
+        H_transfer = self.get_transfer_function(z)
         
         # 3. Apply the rotation for every wavelength (multiply the spectrum with the transfer function)
         U = A * H_transfer

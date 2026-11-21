@@ -83,6 +83,10 @@ def run_full_pipeline(
         device=device,
     )
 
+    initial_depth_path = output_dir / "initial_depth_idx.npy"
+    np.save(initial_depth_path, initial_depth_idx.numpy())
+    print(f"[INFO] Initial depth map saved to: {initial_depth_path}")
+
     # TODO: Part 3 - Voting Agreement & 3D Point Cloud Projection
     # TODO: Part 4 - Quantitative & Qualitative evaluation
 

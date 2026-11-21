@@ -69,10 +69,6 @@ def run_test_reconstruction(
     z_planes = torch.linspace(z_min, z_max, num_planes, device=device)
     dz = (z_max - z_min) / max(num_planes - 1, 1)
 
-    pad = patch_size // 2
-    padded_nx = nx + 2 * pad
-    padded_ny = ny + 2 * pad
-
     video_path = output_dir / "reconstruction_volume.mp4"
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     video_writer = cv2.VideoWriter(str(video_path), fourcc, fps, (video_size, video_size))
@@ -175,8 +171,22 @@ def run_test_focus(
         reconstruction_volume = torch.from_numpy(vol_mmap)
         reconstruction_volume = PaddedVolume(reconstruction_volume, patch_size=patch_size)
     else:
-        print(f"[INFO] No cached volume found. Please construct the volumes first and save them to {volume_cache_path}")
-        exit(0)
+        print(f"[INFO] No cached volume found. Reconstructing {num_planes} planes...")
+        nx, ny = config.hologram_shape
+        propagator = AngularSpectrumPropagator(
+            nx=nx,
+            ny=ny,
+            pixel_pitch=config.pitch_m,
+            wavelength=config.wavelength_m,
+            device=device,
+        )
+        reconstruction_volume = torch.empty((num_planes, nx, ny), dtype=torch.float32, device="cpu")
+        for i, z_val in enumerate(z_planes):
+            amp = propagator.propagate(H_real, z_val.item())
+            reconstruction_volume[i] = amp.cpu()
+            if (i + 1) % 50 == 0 or i == num_planes - 1:
+                print(f"[INFO] Propagated plane {i + 1}/{num_planes}")
+        reconstruction_volume = PaddedVolume(reconstruction_volume, patch_size=patch_size)
 
     vmin = float(np.nanmin(gt_np))
     vmax = float(np.nanmax(gt_np))

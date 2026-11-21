@@ -26,16 +26,18 @@ A copy of the original paper is included in the project root as `paper.pdf`.
 ```text
 Depth_map_retrieval_DFF/
 ├── code/
-│   ├── asm_propagator.py     # Angular Spectrum Method (ASM) propagation & zero-padding
-│   ├── evaluate.py           # Reconstruction verification (MP4 video + snapshots + GT masks)
-│   ├── main.py               # Main entry point for full pipeline and tests
-│   └── utils.py              # Relative path helpers, seed setup, data loading & saving
+│   ├── asm_propagator.py     # Band-limited Angular Spectrum Method (ASM) propagation
+│   ├── evaluate.py           # Reconstruction verification (MP4/snapshots) & Part 2 focus test
+│   ├── focus.py              # Focus measure operators (GLVA, GLVN, CONT) & Auto-Switch selection
+│   ├── main.py               # Main entry point for full pipeline and test suites
+│   └── utils.py              # Relative path helpers, PaddedVolume, L1 metric, seeds, data I/O
 ├── data/
 │   ├── README-data.txt       # Dataset source, structure, and download instructions
 │   └── rook_hologram_data/   # Input hologram (.npy), depth GT (.npy), and metadata.json
 ├── results/
 │   ├── figures/              # Qualitative outputs (depth maps, all-in-focus images, point clouds)
-│   ├── tests/                # Reconstruction test videos and snapshots
+│   ├── full_run/             # Reconstructed 3D volume & initial_depth_idx.npy
+│   ├── tests/                # Test outputs (test_reconstruction/ and test_focus/)
 │   └── metrics.csv           # Quantitative evaluation results (L1 error)
 ├── algorithm.txt             # High-level pseudocode of the core DFF algorithm
 ├── paper.pdf                 # Original research paper
@@ -82,6 +84,16 @@ This propagates the hologram across all 250 planes and outputs:
 * An annotated MP4 video (`results/tests/test_reconstruction/reconstruction_volume.mp4`) showing focus progression across $z$.
 * PNG amplitude snapshots and corresponding ground-truth in-focus masks every 25 frames.
 
+### 3. Run the Focus Operator & Auto-Switch Test (Part 2 Verification)
+```bash
+bash run.sh test_focus
+```
+This tests Part 2 without the voting stage:
+* Evaluates focus operators (`GLVA`, `GLVN`, `CONT`) comparing classical **Argmax** vs. **Auto-Switch** on patch size $13 \times 13$.
+* Computes foreground-only $L_1$ depth error in both millimeters and plane index units against ground-truth.
+* Generates 4-panel visual comparison figures in `results/tests/test_focus/` (Ground Truth | Argmax | Auto-Switch | Auto-Switch Absolute Error).
+* If `results/full_run/reconstruction_volume.npy` is not yet cached on disk, it automatically falls back to computing the reconstruction volume on-the-fly.
+
 ---
 
 ## Hardware & Runtime
@@ -96,6 +108,11 @@ This propagates the hologram across all 250 planes and outputs:
 ## Expected Outputs & Verification Metrics
 
 Running `bash run.sh` produces the reconstructed depth map, all-in-focus image, and `results/metrics.csv`.
+
+### Primary Generated Artifacts
+* `results/full_run/reconstruction_volume.npy`: Unpadded 3D amplitude tensor $(N, H, W) = (250, 4096, 4096)$ computed via band-limited ASM.
+* `results/full_run/initial_depth_idx.npy`: 2D tensor $(H, W) = (4096, 4096)$ storing the locally estimated optimal focal plane index per pixel via the Auto-Switch criterion (Part 2 output).
+* `results/tests/test_focus/test_focus_<OP>_s13.png`: Visual evaluation panels comparing Ground Truth, Argmax, Auto-Switch, and absolute error for each operator.
 
 ### Reference Metrics from the Original Paper (L1 Error, $13 \times 13$ patch with Voting & Auto-Switch)
 | Focus Operator | L1 Error (Paper) |
