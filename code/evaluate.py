@@ -2,7 +2,14 @@ import time
 from pathlib import Path
 import cv2
 import numpy as np
+from numpy.lib import format as np_format
 import torch
+import os
+import matplotlib.pyplot as plt
+
+from utils import compute_l1_error, PaddedVolume
+from typing import Callable, Dict, List, Optional, Tuple
+from focus import estimate_depth_map
 
 from asm_propagator import AngularSpectrumPropagator
 from utils import (
@@ -58,13 +65,6 @@ def run_test_reconstruction(
         device=device,
     )
 
-    # Exact propagation at object_centre_distance_m (e.g., 120 mm) for reference comparison
-    z_center = config.object_centre_distance_m
-    amp_center = propagator.propagate(H_real, z_center)
-    center_img_path = output_dir / f"center_z_{z_center:.5f}m.png"
-    save_amplitude_image(amp_center ** 2, output_dir / f"center_intensity_z_{z_center:.5f}m.png")
-    print(f"[INFO] Saved exact center reconstruction at z = {z_center:.5f} m to: {center_img_path}")
-
     z_min, z_max = config.object_depth_range_m
     z_planes = torch.linspace(z_min, z_max, num_planes, device=device)
     dz = (z_max - z_min) / max(num_planes - 1, 1)
@@ -85,7 +85,7 @@ def run_test_reconstruction(
 
     for i, z_tensor in enumerate(z_planes):
         z_val = z_tensor.item()
-        amplitude = propagator.propagate(H_real, z_val, pad)
+        amplitude = propagator.propagate(H_real, z_val)
 
         # Save PNG snapshot every `save_every` frames (plus the very last frame)
         if i % save_every == 0 or i == num_planes - 1:
@@ -132,3 +132,104 @@ def run_test_reconstruction(
     elapsed = time.perf_counter() - start_time
     print(f"[INFO] Reconstruction test finished in {elapsed:.2f} s.")
     print(f"[INFO] Video saved to: {video_path}")
+
+
+
+    
+def run_test_focus(
+    data_dir: Path = DATA_DIR / "rook_hologram_data",
+    output_dir: Path = RESULTS_DIR / "tests" / "test_focus",
+    volume_cache_path: Path = RESULTS_DIR / "full_run" / "reconstruction_volume.npy",
+    num_planes: int = 250,
+    patch_size: int = 13,
+    operators: Optional[List[str]] = None,
+) -> None:
+    """
+    Test Part 2 (Focus Measure Operators & Auto-Switch) without Voting Agreement.
+    Compares classical argmax vs. Auto-Switch on patch_size=13, prints L1 errors,
+    and saves visual comparison panels in results/tests/test_focus/.
+    """
+    if operators is None:
+        operators = ["GLVA", "GLVN", "CONT"]
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    config_path = data_dir / "metadata.json"
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    gpu_name = torch.cuda.get_device_name(0) if device.type == "cuda" else "CPU"
+    print(f"[INFO] Running Part 2 focus test on: {device} ({gpu_name})")
+
+    config = load_hologram_config(config_path)
+    H_real, depth_gt = load_hologram_data(config, data_dir, device)
+
+    z_min, z_max = config.object_depth_range_m
+    z_planes = torch.linspace(z_min, z_max, num_planes, device="cpu")
+    z_mm = z_planes.numpy() * 1000.0
+    gt_np = depth_gt.detach().cpu().numpy()
+    fg_mask = ~np.isnan(gt_np)
+
+    # Load cached reconstruction volume if available, otherwise compute it
+    if volume_cache_path.exists():
+        print(f"[INFO] Memory-mapping volume from: {volume_cache_path}")
+        vol_mmap = np.load(volume_cache_path, mmap_mode="r")
+        reconstruction_volume = torch.from_numpy(vol_mmap)
+        reconstruction_volume = PaddedVolume(reconstruction_volume, patch_size=patch_size)
+    else:
+        print(f"[INFO] No cached volume found. Please construct the volumes first and save them to {volume_cache_path}")
+        exit(0)
+
+    vmin = float(np.nanmin(gt_np))
+    vmax = float(np.nanmax(gt_np))
+
+    print(f"\n=== PART 2 FOCUS TEST (Patch {patch_size}x{patch_size}, No Voting) ===")
+    for op in operators:
+        pred_argmax = estimate_depth_map(
+            reconstruction_volume, op, patch_size=patch_size, selection_mode="argmax", device=device
+        )
+        l1_mm_arg, l1_idx_arg = compute_l1_error(pred_argmax, gt_np, z_planes)
+
+        pred_switch = estimate_depth_map(
+            reconstruction_volume, op, patch_size=patch_size, selection_mode="auto_switch", device=device
+        )
+        l1_mm_sw, l1_idx_sw = compute_l1_error(pred_switch, gt_np, z_planes)
+
+        print(
+            f"[TEST_FOCUS] {op:<4} | "
+            f"Argmax L1: {l1_idx_arg:6.2f} idx ({l1_mm_arg:.3f} mm) | "
+            f"Auto-Switch L1: {l1_idx_sw:6.2f} idx ({l1_mm_sw:.3f} mm)"
+        )
+
+        # Save 4-panel figure: GT | Argmax | Auto-Switch | Auto-Switch Abs Error
+        arg_mm = np.where(fg_mask, z_mm[pred_argmax.numpy()], np.nan)
+        sw_mm = np.where(fg_mask, z_mm[pred_switch.numpy()], np.nan)
+        err_mm = np.where(fg_mask, np.abs(gt_np - sw_mm), np.nan)
+
+        fig, axes = plt.subplots(1, 4, figsize=(20, 5))
+        fig.suptitle(f"Part 2 Test - {op} (Patch {patch_size}x{patch_size}, No Voting)", fontsize=14)
+
+        im0 = axes[0].imshow(gt_np, cmap="gray", origin="lower", vmin=vmin, vmax=vmax)
+        axes[0].set_title("Ground Truth [mm]")
+        fig.colorbar(im0, ax=axes[0], fraction=0.046)
+
+        im1 = axes[1].imshow(arg_mm, cmap="gray", origin="lower", vmin=vmin, vmax=vmax)
+        axes[1].set_title(f"Argmax (L1={l1_idx_arg:.2f} idx)")
+        fig.colorbar(im1, ax=axes[1], fraction=0.046)
+
+        im2 = axes[2].imshow(sw_mm, cmap="gray", origin="lower", vmin=vmin, vmax=vmax)
+        axes[2].set_title(f"Auto-Switch (L1={l1_idx_sw:.2f} idx)")
+        fig.colorbar(im2, ax=axes[2], fraction=0.046)
+
+        err_vmax = float(np.nanpercentile(err_mm, 98)) if np.any(fg_mask) else 1.0
+        im3 = axes[3].imshow(err_mm, cmap="inferno", origin="lower", vmin=0.0, vmax=err_vmax)
+        axes[3].set_title("Auto-Switch Abs Error [mm]")
+        fig.colorbar(im3, ax=axes[3], fraction=0.046)
+
+        for ax in axes:
+            ax.set_xticks([])
+            ax.set_yticks([])
+
+        out_path = output_dir / f"test_focus_{op}_s{patch_size}.png"
+        with open(str(out_path), "wb") as f:
+            fig.savefig(f, format="png", bbox_inches="tight", dpi=150)
+        plt.close(fig)
+        print(f"[INFO] Saved Part 2 test figure to: {out_path}")

@@ -78,11 +78,14 @@ MODE="${1:-full}"
 if [ "$MODE" = "test_reconstruction" ]; then
     echo "[SH] Running reconstruction test..."
     "$PYTHON_CMD" code/main.py test_reconstruction
+elif [ "$MODE" = "test_focus" ]; then
+    echo "[SH] Running Part 2 focus operators test..."
+    "$PYTHON_CMD" code/main.py test_focus
 elif [ "$MODE" = "full" ]; then
     echo "[SH] Running full DFF pipeline..."
     "$PYTHON_CMD" code/main.py
 else
     echo "[SH] Unknown argument: $MODE"
-    echo "Usage: bash run.sh [test_reconstruction]"
+    echo "Usage: bash run.sh [test_reconstruction|test_focus]"
     exit 1
 fi

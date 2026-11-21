@@ -1,14 +1,19 @@
 import json
 import random
-import numpy as np
 import torch
+import torch.nn.functional as F
+import os
+import numpy as np
+from numpy.lib import format as np_format
 import matplotlib
 matplotlib.use("Agg") # Must be called before importing pyplot
 import matplotlib.pyplot as plt
-import os
 from dataclasses import dataclass
 from typing import Tuple, List
 from pathlib import Path
+
+from typing import Callable, Dict, List, Optional, Tuple
+
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT_DIR / "data"
@@ -99,3 +104,62 @@ def save_amplitude_image(
     plt.title(f"ASM Reconstruction - {filepath.name}")
     plt.savefig(filepath, bbox_inches="tight", dpi=150)
     plt.close()
+
+
+def compute_l1_error(
+    pred_depth_idx: np.ndarray | torch.Tensor,
+    gt_depth_mm: np.ndarray | torch.Tensor,
+    z_planes_m: np.ndarray | torch.Tensor,
+    extra_fg_mask: Optional[np.ndarray] = None,
+) -> Tuple[float, float]:
+    """Compute foreground-only L1 depth error in millimeters and in plane index units."""
+
+    # Normalize data - np.ndarray on CPU. Convert plane distances from mm to m (multiply with 1000)
+    pred_idx = pred_depth_idx.detach().cpu().numpy() if isinstance(pred_depth_idx, torch.Tensor) else np.asarray(pred_depth_idx)
+    gt_mm = gt_depth_mm.detach().cpu().numpy() if isinstance(gt_depth_mm, torch.Tensor) else np.asarray(gt_depth_mm)
+    z_mm = (z_planes_m.detach().cpu().numpy() if isinstance(z_planes_m, torch.Tensor) else np.asarray(z_planes_m)) * 1000.0
+
+    # Foreground mask - contains True only for object pixels 
+    fg_mask = ~np.isnan(gt_mm)
+    if extra_fg_mask is not None:
+        fg_mask = fg_mask & extra_fg_mask
+
+    # Compute the L1 error
+    pred_mm = z_mm[pred_idx.astype(np.int64)]
+    l1_mm = float(np.mean(np.abs(gt_mm[fg_mask] - pred_mm[fg_mask])))
+
+    # Compute mean error in number of planes
+    dz_mm = (z_mm[-1] - z_mm[0]) / max(len(z_mm) - 1, 1)
+    gt_idx = (gt_mm[fg_mask] - z_mm[0]) / dz_mm
+    l1_plane_idx = float(np.mean(np.abs(gt_idx - pred_idx[fg_mask])))
+
+    return l1_mm, l1_plane_idx
+
+
+def apply_zero_padding(tensor: torch.Tensor, patch_size: int) -> torch.Tensor:
+    """
+    Apply 2D zero-padding of size (patch_size // 2) on the last two spatial dimensions (H, W).
+    Works for both 2D planes (H, W) and 3D volumes (N, H, W).
+    """
+    pad = patch_size // 2
+    if pad <= 0:
+        return tensor
+    # F.pad applies (pad_left, pad_right, pad_top, pad_bottom) to the last two dims
+    return F.pad(tensor, (pad, pad, pad, pad), mode="constant", value=0.0)
+
+
+class PaddedVolume:
+    """
+    Zero-copy lazy wrapper that applies zero-padding of size (patch_size // 2)
+    on-the-fly to each 2D plane when indexed. Avoids duplicating a 16+ GB volume in RAM.
+    """
+
+    def __init__(self, volume, patch_size: int):
+        self.volume = volume
+        self.patch_size = patch_size
+        self.pad = patch_size // 2
+        N, H, W = volume.shape
+        self.shape = (N, H + 2 * self.pad, W + 2 * self.pad)
+
+    def __getitem__(self, idx: int) -> torch.Tensor:
+        return apply_zero_padding(self.volume[idx], self.patch_size)

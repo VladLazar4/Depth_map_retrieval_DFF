@@ -31,7 +31,7 @@ class AngularSpectrumPropagator:
         self.FZ[self.prop_mask] = torch.sqrt(self.limit - self.F_squared[self.prop_mask])
         
 
-    def propagate(self, H: torch.Tensor, z: float, pad: int = 0) -> torch.Tensor:
+    def propagate(self, H: torch.Tensor, z: float) -> torch.Tensor:
         """
         Propagate the complex hologram H to distance z
         """
@@ -52,10 +52,5 @@ class AngularSpectrumPropagator:
         
         # The amplitude is the absolute value of H_propagated
         amplitude = torch.abs(H_propagated)
-
-        # 5. Apply zero padding on the reconstruction
-        if pad > 0:
-            # Pad format for 2D tensor: (pad_left, pad_right, pad_top, pad_bottom)
-            amplitude = F.pad(amplitude, (pad, pad, pad, pad), mode="constant", value=0.0)
 
         return amplitude
